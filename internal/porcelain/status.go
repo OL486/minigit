@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/OL486/minigit/internal/index"
+	"github.com/OL486/minigit/internal/merge"
 	"github.com/OL486/minigit/internal/object"
 	"github.com/OL486/minigit/internal/refs"
 )
@@ -20,7 +21,9 @@ import (
 //   - Untracked：工作区有、索引里没有
 type Status struct {
 	Branch         string
-	NoCommits      bool // 还没有任何提交
+	NoCommits      bool   // 还没有任何提交
+	Merging        bool   // 正在合并（.git/MERGE_HEAD 存在）
+	MergeBranch    string // 正在合并的分支名（MERGE_MSG 里解析，解析不到为空）
 	StagedAdded    []string
 	StagedModified []string
 	StagedDeleted  []string
@@ -45,6 +48,18 @@ func ComputeStatus(gitDir, workDir string) (*Status, error) {
 		return nil, err
 	}
 	st := &Status{Branch: branch}
+	// 正在合并（MERGE_HEAD 存在）：从 MERGE_MSG 的首行
+	// "Merge branch '<name>'" 里解析分支名。
+	if _, err := os.Stat(filepath.Join(gitDir, "MERGE_HEAD")); err == nil {
+		st.Merging = true
+		if msg, err := merge.MergeMessage(gitDir); err == nil {
+			if rest, ok := strings.CutPrefix(msg, "Merge branch '"); ok {
+				if i := strings.Index(rest, "'"); i >= 0 {
+					st.MergeBranch = rest[:i]
+				}
+			}
+		}
+	}
 	// HEAD 的 tree 拍平。
 	head := map[string]object.Entry{}
 	headSHA, err := refs.ResolveRef(gitDir, "HEAD")
@@ -172,6 +187,13 @@ func PrintStatus(out io.Writer, s *Status) {
 	fmt.Fprintf(&b, "On branch %s\n", s.Branch)
 	if s.NoCommits {
 		b.WriteString("No commits yet\n")
+	}
+	if s.Merging {
+		if s.MergeBranch != "" {
+			fmt.Fprintf(&b, "正在合并 %s（有冲突未解决）\n", s.MergeBranch)
+		} else {
+			b.WriteString("正在合并（有冲突未解决）\n")
+		}
 	}
 	if len(s.StagedAdded) > 0 || len(s.StagedModified) > 0 || len(s.StagedDeleted) > 0 {
 		b.WriteString("\nChanges to be committed:\n")

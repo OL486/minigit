@@ -10,7 +10,8 @@ import (
 	"github.com/OL486/minigit/internal/refs"
 )
 
-// Log 沿 parent 链（只跟第一 parent；M2 没有合并提交）打印提交历史。
+// Log 沿 parent 链（只跟第一 parent；合并提交的第二 parent 不跟）
+// 打印提交历史。
 // 默认格式：
 //
 //	commit <完整 SHA>

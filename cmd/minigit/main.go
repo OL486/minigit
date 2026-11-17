@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OL486/minigit/internal/index"
+	"github.com/OL486/minigit/internal/merge"
 	"github.com/OL486/minigit/internal/plumbing"
 	"github.com/OL486/minigit/internal/porcelain"
 	"github.com/OL486/minigit/internal/refs"
@@ -46,6 +47,8 @@ func main() {
 		err = cmdCheckout(os.Args[2:])
 	case "diff":
 		err = cmdDiff(os.Args[2:])
+	case "merge":
+		err = cmdMerge(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -77,11 +80,15 @@ func usage() {
   minigit checkout <branch>        切换分支
   minigit diff [--cached]          显示 unified diff（默认工作区相对索引；
                                    --cached 显示索引相对 HEAD）
+  minigit merge <branch> [-m <message>]
+                                   合并分支（fast-forward 或三路合并；
+                                   有冲突时 exit 1，解决后 add + commit）
 
-M4 支持以上命令；merge 是 M5 的事。
+M5 支持以上全部命令。
 checkout 只接受分支名，不支持 detached HEAD；branch -d（删分支）本轮不做。
 branch 的名字里不能含 /（不支持层级分支名）。
 diff <commit> 不做（只比较工作区 / 索引 / HEAD 三方）。
+merge --abort 不做（放弃合并：手动删 .git/MERGE_HEAD 与 .git/MERGE_MSG）。
 `)
 }
 
@@ -277,12 +284,21 @@ func cmdCommit(args []string) error {
 			return fmt.Errorf("commit 不支持的参数：%s（用法：commit -m <message>）", args[i])
 		}
 	}
-	if message == "" {
-		return fmt.Errorf("commit 需要 -m <message>")
-	}
 	gitDir, _, err := repo.FindRepo(".")
 	if err != nil {
 		return err
+	}
+	if message == "" {
+		// 合并进行中：没给 -m 就用 MERGE_MSG 的首行当提交信息。
+		if mh, rerr := merge.ReadMergeHead(gitDir); rerr == nil && mh != "" {
+			message, err = merge.MergeMessage(gitDir)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if message == "" {
+		return fmt.Errorf("commit 需要 -m <message>")
 	}
 	sha, err := porcelain.Commit(gitDir, message)
 	if err != nil {
@@ -381,6 +397,36 @@ func cmdCheckout(args []string) error {
 		fmt.Printf("Already on '%s'\n", args[0])
 	}
 	return nil
+}
+
+func cmdMerge(args []string) error {
+	var branch, message string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-m":
+			if i+1 >= len(args) {
+				return fmt.Errorf("merge -m 需要提交信息")
+			}
+			i++
+			message = args[i]
+		default:
+			if len(args[i]) > 0 && args[i][0] == '-' {
+				return fmt.Errorf("merge 不支持的参数：%s", args[i])
+			}
+			if branch != "" {
+				return fmt.Errorf("merge 需要恰好一个分支名参数")
+			}
+			branch = args[i]
+		}
+	}
+	if branch == "" {
+		return fmt.Errorf("merge 需要一个分支名参数")
+	}
+	gitDir, workDir, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	return porcelain.Merge(gitDir, workDir, branch, message, os.Stdout)
 }
 
 // firstLine 取提交信息的首行（commit 摘要打印用）。

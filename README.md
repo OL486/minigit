@@ -5,17 +5,17 @@
 目标是自己每天能用，并且写出来的仓库**真 git 能读**
 （对象、提交、索引格式与 git 字节兼容）。
 
-## 当前状态：M4（diff 与索引对齐）
+## 当前状态：M5（合并）——每天能用的完整 git 子集
 
-M4 跑通 `diff` / `diff --cached`：Myers O(ND) 行级 diff，unified
-格式与 `git diff` 逐行一致（归一化掉 index 行的 SHA 前缀后）；
-索引换成 git index v2 格式（`DIRC` + 版本 2 + 条目 + SHA-1 校验和），
-stat 字段从文件真实 stat 取，`git status` / `git fsck` /
-`git checkout` 在 minigit 仓库里直接跑都正常。M2/M3 的旧 JSON
-索引读时自动迁移（缺失的 stat 字段补零，下次写盘存成 v2），
-真 git 写出的带扩展（TREE 等）的索引读时能跳过扩展。
-分支切换、commit 对象与 git 字节兼容，`git branch` /
-`git log --all` 能读 minigit 的分支与历史。
+M5 跑通 `merge`：fast-forward 与三路合并。行级合并复用 M4 的
+Myers diff，冲突标记 `<<<<<<< ours` / `=======` / `>>>>>>> theirs`，
+合并提交带两个 parent（HEAD 与目标 tip），`.git/MERGE_HEAD` /
+`.git/MERGE_MSG` 与 git 同名同格式，冲突解决后 `add` + `commit`
+（不带 `-m` 时信息取 MERGE_MSG 首行）完成合并；`status` 在合并
+进行中顶部提示正在合并。25 组随机场景与 `git merge` 差分对照：
+干净合并的 tree SHA 相同，冲突文件内容归一化标记标签后相同。
+`git status` / `git fsck` / `git checkout` / `git log --all` 在
+minigit 仓库里直接跑都正常。
 
 ## 能跑什么
 
@@ -36,6 +36,9 @@ minigit branch <name> [start]    # 在 HEAD（或 start-point）创建分支
 minigit checkout <branch>        # 切换分支
 minigit diff                     # 工作区相对索引的未暂存修改（unified）
 minigit diff --cached            # 索引相对 HEAD 的已暂存修改（unified）
+minigit merge <branch> [-m <message>]
+                                 # 合并分支（fast-forward 或三路合并；
+                                 # 有冲突时 exit 1，解决后 add + commit）
 ```
 
 - `branch` 不带参数列出分支；建分支时 start-point 可以是分支名、
@@ -77,6 +80,8 @@ Untracked files:
 ```
 
   干净时只打印 `On branch main` + `nothing to commit, working tree clean`。
+  合并进行中（`.git/MERGE_HEAD` 存在）时，`On branch` 下面多一行
+  `正在合并 <分支>（有冲突未解决）`。
   索引是 git index v2 格式，`git status` / `git fsck` 直接跑都正常。
 
 - `diff` 的输出格式与 `git diff` 一致（`diff --git` / `index` /
@@ -84,14 +89,31 @@ Untracked files:
   二进制文件都对齐 git 的写法）；`diff <commit>` 本轮不做，
   会报用法错误。无改动时什么都不输出（exit 0）。
 
-## 不能跑什么（后面里程碑的事）
+- `merge`：目标已是 HEAD 的祖先时打印 `Already up to date.`；
+  HEAD 是目标的祖先时 fast-forward（移动分支指针，不产生提交）；
+  否则三路合并（base 是两边的 merge-base）。工作区有已暂存 /
+  未暂存的修改时拒绝合并。干净合并创建两个 parent 的提交，
+  默认信息 `Merge branch '<name>'`。有冲突时打印冲突文件列表
+  并 exit 1，冲突文件写带标记的内容到工作区，
+  `.git/MERGE_HEAD` 与 `.git/MERGE_MSG` 写好，等用户手动解决后
+  `add` + `commit`（不带 `-m` 时信息取 MERGE_MSG 首行）；
+  这次 `commit` 带两个 parent，成功后清除合并状态。
+  冲突文件里还有 `<<<<<<< ` 标记时提交会被拒绝。
+  接受删除那一边时：删掉工作区文件再 `add <文件>` 即可
+  （`add` 已删除的被追踪文件就是暂存删除）。`merge --abort` 不做。
+  三路合并的规则表、merge-base 算法、与 git 的差异点见
+  [docs/03-merge.md](docs/03-merge.md)。
 
-- `diff <commit>`（只做了工作区/索引两档）、`rm`（删文件要手动
-  从工作区删，索引里的条目暂存时不会自动去掉）
-- `merge`（M5，三路合并）
-- `branch -d`（删分支）、detached HEAD、层级分支名（名字里含 `/`）
+## 不能跑什么（不在规划里）
+
+- `diff <commit>`（只做了工作区/索引两档）、`rm`（没有 rm 命令；
+  删文件要手动从工作区删，再 `add <文件>` 暂存删除）
+- `merge --abort`（放弃合并：手动删 `.git/MERGE_HEAD` 与
+  `.git/MERGE_MSG`）、`branch -d`（删分支）、detached HEAD、
+  层级分支名（名字里含 `/`）
 - 网络传输（clone / fetch / push / pull 一律不做）、packfile、
-  rebase、stash、tag 对象、`.gitignore`（见规划不做清单）
+  rebase、stash、tag 对象、重命名检测、sparse checkout、
+  `.gitignore`（见规划不做清单）
 
 ## 怎么跑
 
@@ -101,8 +123,10 @@ export PATH="$HOME/go/bin:$PATH"
 
 make check      # go vet + 全部测试
 make examples   # 演示 init → add → commit → log → status 全流程，
-                # 再演示 branch / checkout（M3），最后演示 diff 与
+                # 再演示 branch / checkout（M3），diff 与
                 # git diff 对照、git status / git fsck 直接跑（M4），
+                # 最后演示 merge：fast-forward、干净合并、冲突 +
+                # 手动解决 + 提交，并与 git merge 对照 tree SHA（M5），
                 # 并断言 git log 能读提交历史、git fsck 通过
 ```
 
@@ -123,8 +147,16 @@ git 写的 blob / tree / commit 用 `minigit cat-file` 读）；
 （Myers 与暴力 LCS 对照 10,000 组随机输入；`minigit diff` /
 `diff --cached` 与 `git diff` 归一化后逐行一致，含随机文件树；
 索引 v2 round-trip、JSON 旧索引迁移、0xFFF 超长名、扩展跳过、
-校验和/截断损坏；`git status` 在 minigit 仓库里直接跑正常）。
+校验和/截断损坏；`git status` 在 minigit 仓库里直接跑正常）；
+合并（行级合并单元测试：干净合并、同内容、单边改、双方删、
+同点插入、重叠冲突、删除 vs 修改、边界插入、空文件、多冲突区、
+结尾换行符规则；merge-base / 祖先检测 / MERGE_HEAD 与 MERGE_MSG
+读写；fast-forward、干净三路合并、冲突 + 手动解决 + 提交、
+删除 vs 修改、双方新增、Already up to date、脏工作区拒绝、
+无关历史拒绝；25 组随机场景与 `git merge` 差分对照：干净合并
+的 tree SHA 相同，冲突文件内容归一化标记标签后相同）。
 
 对象格式精确到字节的说明见 [docs/01-object-format.md](docs/01-object-format.md)，
 索引 v2 格式见 [docs/02-index-format.md](docs/02-index-format.md)，
+三路合并见 [docs/03-merge.md](docs/03-merge.md)，
 完整规划见仓库外的 `tech-project-plans.md`（项目 2）。

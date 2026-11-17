@@ -1,8 +1,10 @@
 #!/bin/sh
-# M1+M2+M3+M4 演示：init → hash-object -w → cat-file（M1），
+# M1+M2+M3+M4+M5 演示：init → hash-object -w → cat-file（M1），
 # 再 add → commit → log → status（M2），branch / checkout（M3），
-# 最后改文件 → minigit diff 与 git diff 对照 → add →
-# git status 直接跑 → git fsck 直接跑（M4）。
+# 改文件 → minigit diff 与 git diff 对照 → add →
+# git status 直接跑 → git fsck 直接跑（M4），最后 merge：
+# 干净合并与 git merge 对照 tree SHA、fast-forward、
+# 冲突 + 手动解决 + 提交、git fsck 直接跑（M5）。
 # 用法：./scripts/demo.sh <minigit 二进制路径>
 set -eu
 
@@ -264,6 +266,118 @@ case "$GS" in *"modified:   a.txt"*) ;; *) echo "FAIL：git status 看不到已�
 echo "git status 直接跑 OK（能看到已暂存修改）"
 
 # git fsck 直接跑通过（M2 的已知限制本轮消除）。
+if ! git fsck >/dev/null 2>&1; then
+	echo "FAIL：git fsck 不通过"
+	exit 1
+fi
+echo "git fsck 直接跑 OK"
+
+# === M5：merge ===
+echo "=== M5：merge ==="
+cd "$WORK"
+"$BIN" init demo-merge >/dev/null
+cd demo-merge
+
+# 基础提交：a.txt 3 行 + b.txt。
+printf 'line1\nline2\nline3\n' > a.txt
+printf 'base\n' > b.txt
+"$BIN" add a.txt b.txt
+"$BIN" commit -m "base" >/dev/null
+
+# 分支 feature：改 a.txt 第 3 行。
+"$BIN" branch feature
+"$BIN" checkout feature >/dev/null
+printf 'line1\nline2\nline3-feature\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "feature change" >/dev/null
+
+# 回 main：改 a.txt 第 1 行（与 feature 改的不同行，干净合并）。
+"$BIN" checkout main >/dev/null
+printf 'line1-main\nline2\nline3\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "main change" >/dev/null
+
+# 干净合并 feature。
+"$BIN" merge feature > merge-out.txt
+cat merge-out.txt
+TREE_MINI=$(git rev-parse 'HEAD^{tree}')
+
+# 同样场景用真 git 跑一遍，对照 tree SHA。
+GITWORK=$(mktemp -d)
+trap 'rm -rf "$WORK" ${COPY:-} ${GITWORK:-}' EXIT
+git init -q -b main "$GITWORK/grepo"
+cd "$GITWORK/grepo"
+printf 'line1\nline2\nline3\n' > a.txt
+printf 'base\n' > b.txt
+git add a.txt b.txt
+git commit -qm "base"
+git branch feature
+git checkout -q feature
+printf 'line1\nline2\nline3-feature\n' > a.txt
+git add a.txt
+git commit -qm "feature change"
+git checkout -q main
+printf 'line1-main\nline2\nline3\n' > a.txt
+git add a.txt
+git commit -qm "main change"
+git merge -q --no-edit -m "Merge branch 'feature'" feature
+TREE_GIT=$(git rev-parse 'HEAD^{tree}')
+cd "$WORK/demo-merge"
+if [ "$TREE_MINI" != "$TREE_GIT" ]; then
+	echo "FAIL：干净合并的 tree SHA 与 git 不同：minigit $TREE_MINI vs git $TREE_GIT"
+	exit 1
+fi
+echo "干净合并 tree SHA 与 git 一致 OK：$TREE_MINI"
+
+# fast-forward：从 main 再分一个分支，只往前走。
+"$BIN" branch ff
+"$BIN" checkout ff >/dev/null
+printf 'line1-main\nline2\nline3-feature\nline4\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "ff commit" >/dev/null
+"$BIN" checkout main >/dev/null
+"$BIN" merge ff > ff-out.txt
+case "$(cat ff-out.txt)" in *"Fast-forward"*) ;; *) echo "FAIL：应 fast-forward，得到：$(cat ff-out.txt)"; exit 1;; esac
+FF_HEAD=$(git rev-parse HEAD)
+FF_TIP=$(git rev-parse ff)
+if [ "$FF_HEAD" != "$FF_TIP" ]; then
+	echo "FAIL：fast-forward 后 HEAD 应与 ff 相同"
+	exit 1
+fi
+echo "fast-forward OK"
+
+# 冲突：双方改 a.txt 第 1 行。
+"$BIN" branch conflict
+"$BIN" checkout conflict >/dev/null
+printf 'line1-conflict\nline2\nline3-feature\nline4\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "conflict change" >/dev/null
+"$BIN" checkout main >/dev/null
+printf 'line1-main2\nline2\nline3-feature\nline4\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "main change 2" >/dev/null
+if "$BIN" merge conflict 2>/dev/null; then
+	echo "FAIL：冲突合并应 exit 1"
+	exit 1
+fi
+grep -q '<<<<<<< ours' a.txt || { echo "FAIL：冲突文件缺少 <<<<<<< ours 标记"; exit 1; }
+grep -q '>>>>>>> theirs' a.txt || { echo "FAIL：冲突文件缺少 >>>>>>> theirs 标记"; exit 1; }
+echo "冲突标记 OK"
+# status 提示正在合并。
+S=$("$BIN" status)
+case "$S" in *"正在合并 conflict（有冲突未解决）"*) ;; *) echo "FAIL：status 应提示正在合并：$S"; exit 1;; esac
+echo "status 合并提示 OK"
+# 手动解决：取 main 的第 1 行，add，commit（不带 -m，信息取 MERGE_MSG）。
+printf 'line1-main2\nline2\nline3-feature\nline4\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit >/dev/null
+P=$(git cat-file -p HEAD | grep -c '^parent ')
+if [ "$P" != "2" ]; then
+	echo "FAIL：合并提交应有 2 个 parent，实际 $P"
+	exit 1
+fi
+echo "解决冲突后提交、2 个 parent OK"
+# git fsck 直接通过。
 if ! git fsck >/dev/null 2>&1; then
 	echo "FAIL：git fsck 不通过"
 	exit 1

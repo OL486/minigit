@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/OL486/minigit/internal/index"
+	"github.com/OL486/minigit/internal/merge"
 	"github.com/OL486/minigit/internal/object"
 )
 
@@ -44,6 +45,25 @@ func addOne(gitDir, workDir string, idx *index.Index, path string) error {
 	}
 	info, err := os.Lstat(abs)
 	if err != nil {
+		// 文件不存在：如果它在索引里，说明用户删了这个被追踪文件，
+		// add 它就是暂存删除（和 git add 一样）；否则报错。
+		// 这让“删除 vs 修改”冲突能按接受删除来解决。
+		// 例外：合并进行中的冲突文件，索引里本来就没有它
+		// （删除那一边就是 HEAD），add 是空操作、成功。
+		if os.IsNotExist(err) {
+			relSlash := filepath.ToSlash(rel)
+			if _, ok := idx.Get(relSlash); ok {
+				idx.Remove(relSlash)
+				return nil
+			}
+			if conflicts, cerr := merge.MergeConflicts(gitDir); cerr == nil {
+				for _, p := range conflicts {
+					if p == relSlash {
+						return nil
+					}
+				}
+			}
+		}
 		return fmt.Errorf("add 失败：%s 不存在或无法读取：%w", path, err)
 	}
 	if info.Mode()&fs.ModeSymlink != 0 {
