@@ -5,8 +5,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/OL486/minigit/internal/index"
 	"github.com/OL486/minigit/internal/plumbing"
+	"github.com/OL486/minigit/internal/porcelain"
+	"github.com/OL486/minigit/internal/refs"
 	"github.com/OL486/minigit/internal/repo"
 )
 
@@ -23,6 +28,18 @@ func main() {
 		err = cmdHashObject(os.Args[2:])
 	case "cat-file":
 		err = cmdCatFile(os.Args[2:])
+	case "write-tree":
+		err = cmdWriteTree(os.Args[2:])
+	case "commit-tree":
+		err = cmdCommitTree(os.Args[2:])
+	case "add":
+		err = cmdAdd(os.Args[2:])
+	case "commit":
+		err = cmdCommit(os.Args[2:])
+	case "status":
+		err = cmdStatus(os.Args[2:])
+	case "log":
+		err = cmdLog(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -42,9 +59,15 @@ func usage() {
   minigit init [目录]              创建仓库（默认当前目录）
   minigit hash-object [-w] <文件>   计算文件的 blob SHA-1（-w 时写入对象库）
   minigit cat-file (-p|-t) <sha>    打印对象内容（-p）或类型（-t）
+  minigit write-tree               按暂存区生成 tree 对象，打印 tree SHA
+  minigit commit-tree <tree> [-p <parent>] -m <message>
+                                   按 tree 创建 commit 对象，打印 commit SHA
+  minigit add <文件...>            暂存文件（支持目录，递归加）
+  minigit commit -m <message>      按暂存区提交
+  minigit status                   显示工作区状态
+  minigit log [--oneline]          显示提交历史
 
-M1 只支持以上三个命令；add / commit / status / log / branch / checkout /
-diff / merge 是 M2 以后的事。
+M2 支持以上命令；branch / checkout / diff / merge 是 M3 以后的事。
 `)
 }
 
@@ -128,4 +151,175 @@ func cmdCatFile(args []string) error {
 		return err
 	}
 	return plumbing.CatFile(os.Stdout, gitDir, shas[0], mode == "-t", mode == "-p")
+}
+
+func cmdWriteTree(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("write-tree 不接受参数")
+	}
+	gitDir, _, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	idx, err := index.Read(gitDir)
+	if err != nil {
+		return err
+	}
+	sha, err := plumbing.WriteTree(gitDir, idx)
+	if err != nil {
+		return err
+	}
+	fmt.Println(sha)
+	return nil
+}
+
+func cmdCommitTree(args []string) error {
+	var treeSHA, message string
+	var parents []string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-m":
+			if i+1 >= len(args) {
+				return fmt.Errorf("commit-tree -m 需要提交信息")
+			}
+			i++
+			message = args[i]
+		case "-p":
+			if i+1 >= len(args) {
+				return fmt.Errorf("commit-tree -p 需要 parent SHA")
+			}
+			i++
+			parents = append(parents, args[i])
+		default:
+			if len(args[i]) > 0 && args[i][0] == '-' {
+				return fmt.Errorf("commit-tree 不支持的选项：%s", args[i])
+			}
+			if treeSHA != "" {
+				return fmt.Errorf("commit-tree 需要恰好一个 tree SHA 参数")
+			}
+			treeSHA = args[i]
+		}
+	}
+	if treeSHA == "" {
+		return fmt.Errorf("commit-tree 需要一个 tree SHA 参数")
+	}
+	if message == "" {
+		return fmt.Errorf("commit-tree 需要 -m <message>")
+	}
+	gitDir, _, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	if len(parents) == 0 {
+		// 默认 parent 是 HEAD（没有提交时为空，即根提交）。
+		if head, err := refs.ResolveRef(gitDir, "HEAD"); err == nil {
+			parents = []string{head}
+		} else if !refs.IsNotFound(err) {
+			return err
+		}
+	}
+	author, err := repo.AuthorIdentity(gitDir)
+	if err != nil {
+		return err
+	}
+	committer, err := repo.CommitterIdentity(gitDir)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	sha, err := plumbing.CommitTree(gitDir, treeSHA, parents,
+		plumbing.FormatIdentity(author.Name, author.Email, now),
+		plumbing.FormatIdentity(committer.Name, committer.Email, now),
+		message)
+	if err != nil {
+		return err
+	}
+	fmt.Println(sha)
+	return nil
+}
+
+func cmdAdd(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("add 需要至少一个文件参数")
+	}
+	gitDir, workDir, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	return porcelain.Add(gitDir, workDir, args)
+}
+
+func cmdCommit(args []string) error {
+	var message string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-m":
+			if i+1 >= len(args) {
+				return fmt.Errorf("commit -m 需要提交信息")
+			}
+			i++
+			message = args[i]
+		default:
+			return fmt.Errorf("commit 不支持的参数：%s（用法：commit -m <message>）", args[i])
+		}
+	}
+	if message == "" {
+		return fmt.Errorf("commit 需要 -m <message>")
+	}
+	gitDir, _, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	sha, err := porcelain.Commit(gitDir, message)
+	if err != nil {
+		return err
+	}
+	branch, err := refs.CurrentBranch(gitDir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[%s %s] %s\n", branch, sha[:7], firstLine(message))
+	return nil
+}
+
+func cmdStatus(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("status 不接受参数")
+	}
+	gitDir, workDir, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	st, err := porcelain.ComputeStatus(gitDir, workDir)
+	if err != nil {
+		return err
+	}
+	porcelain.PrintStatus(os.Stdout, st)
+	return nil
+}
+
+func cmdLog(args []string) error {
+	oneline := false
+	for _, a := range args {
+		switch a {
+		case "--oneline":
+			oneline = true
+		default:
+			return fmt.Errorf("log 不支持的参数：%s", a)
+		}
+	}
+	gitDir, _, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	return porcelain.Log(gitDir, oneline, os.Stdout)
+}
+
+// firstLine 取提交信息的首行（commit 摘要打印用）。
+func firstLine(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if i := strings.Index(msg, "\n"); i >= 0 {
+		return msg[:i]
+	}
+	return msg
 }
