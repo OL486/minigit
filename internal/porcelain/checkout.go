@@ -194,17 +194,10 @@ func Checkout(gitDir, workDir, target string) (bool, error) {
 			if err != nil {
 				return false, fmt.Errorf("读取切换后文件状态失败：%w", err)
 			}
-			kept[a.path] = index.Entry{
-				Path:      a.path,
-				SHA:       a.entry.SHA,
-				Mode:      a.entry.Mode,
-				Size:      fi.Size(),
-				MtimeSec:  fi.ModTime().Unix(),
-				MtimeNsec: int64(fi.ModTime().Nanosecond()),
-			}
+			kept[a.path] = index.EntryFromStat(a.path, a.entry.SHA, a.entry.Mode, fi)
 		}
 	}
-	newIdx := &index.Index{Version: 1}
+	newIdx := &index.Index{Version: 2}
 	for _, e := range kept {
 		newIdx.Entries = append(newIdx.Entries, e)
 	}

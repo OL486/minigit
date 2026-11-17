@@ -5,15 +5,17 @@
 目标是自己每天能用，并且写出来的仓库**真 git 能读**
 （对象、提交、索引格式与 git 字节兼容）。
 
-## 当前状态：M3（分支切换）
+## 当前状态：M4（diff 与索引对齐）
 
-M3 跑通 branch / checkout：建分支、两边各提交、切换后工作区内容
-正确还原，脏工作区按 git 的规则挡住切换（已暂存的修改、未提交的
-修改、会被覆盖的未追踪文件都会报错并写清文件名；与切换无关的
-修改、内容恰好就是目标版本的未追踪文件会带着走）。
-索引仍是简化 JSON 格式（M4 换 v2），引用（分支）是文件，
-commit 对象与 git 字节兼容，`git branch` / `git log --all` 能读
-minigit 的分支与历史。
+M4 跑通 `diff` / `diff --cached`：Myers O(ND) 行级 diff，unified
+格式与 `git diff` 逐行一致（归一化掉 index 行的 SHA 前缀后）；
+索引换成 git index v2 格式（`DIRC` + 版本 2 + 条目 + SHA-1 校验和），
+stat 字段从文件真实 stat 取，`git status` / `git fsck` /
+`git checkout` 在 minigit 仓库里直接跑都正常。M2/M3 的旧 JSON
+索引读时自动迁移（缺失的 stat 字段补零，下次写盘存成 v2），
+真 git 写出的带扩展（TREE 等）的索引读时能跳过扩展。
+分支切换、commit 对象与 git 字节兼容，`git branch` /
+`git log --all` 能读 minigit 的分支与历史。
 
 ## 能跑什么
 
@@ -32,6 +34,8 @@ minigit log [--oneline]          # 显示提交历史
 minigit branch                   # 列出分支（当前分支前标 *，按字母序）
 minigit branch <name> [start]    # 在 HEAD（或 start-point）创建分支
 minigit checkout <branch>        # 切换分支
+minigit diff                     # 工作区相对索引的未暂存修改（unified）
+minigit diff --cached            # 索引相对 HEAD 的已暂存修改（unified）
 ```
 
 - `branch` 不带参数列出分支；建分支时 start-point 可以是分支名、
@@ -73,13 +77,17 @@ Untracked files:
 ```
 
   干净时只打印 `On branch main` + `nothing to commit, working tree clean`。
-  注意：M2 的索引是临时 JSON 格式，`git status` / `git fsck` 直接跑
-  会报 "index file corrupt"——这是已知限制，M4 换成 v2 格式后解决；
-  对象本身是合法的（`git log` / `git cat-file` / `git ls-tree` 都能读）。
+  索引是 git index v2 格式，`git status` / `git fsck` 直接跑都正常。
+
+- `diff` 的输出格式与 `git diff` 一致（`diff --git` / `index` /
+  `---` / `+++` / `@@` hunk，上下文 3 行，纯新增/纯删除/改 mode/
+  二进制文件都对齐 git 的写法）；`diff <commit>` 本轮不做，
+  会报用法错误。无改动时什么都不输出（exit 0）。
 
 ## 不能跑什么（后面里程碑的事）
 
-- `diff`（M4，Myers diff + 索引对齐）
+- `diff <commit>`（只做了工作区/索引两档）、`rm`（删文件要手动
+  从工作区删，索引里的条目暂存时不会自动去掉）
 - `merge`（M5，三路合并）
 - `branch -d`（删分支）、detached HEAD、层级分支名（名字里含 `/`）
 - 网络传输（clone / fetch / push / pull 一律不做）、packfile、
@@ -93,8 +101,9 @@ export PATH="$HOME/go/bin:$PATH"
 
 make check      # go vet + 全部测试
 make examples   # 演示 init → add → commit → log → status 全流程，
-                # 再演示 branch / checkout（M3），并断言 git log 能读
-                # 提交历史、git fsck 通过
+                # 再演示 branch / checkout（M3），最后演示 diff 与
+                # git diff 对照、git status / git fsck 直接跑（M4），
+                # 并断言 git log 能读提交历史、git fsck 通过
 ```
 
 ## 怎么测
@@ -103,15 +112,19 @@ make examples   # 演示 init → add → commit → log → status 全流程，
 go test ./... -count=1
 ```
 
-测试分四层：对象编解码 round-trip（blob / tree / commit，含随机内容与
+测试分五层：对象编解码 round-trip（blob / tree / commit，含随机内容与
 1MB 大对象）；`hash-object` 与真 git 对照（100 个随机文件，含空文件、
 二进制、1MB）；双向互读（minigit 写的对象用 `git cat-file` 读，
 git 写的 blob / tree / commit 用 `minigit cat-file` 读）；
 提交流程（add → commit → log 全流程、status 三种状态、
-`git log` 读历史、`git fsck` 通过——fsck 跑之前会临时挪走
-JSON 索引，见测试里的注释）；分支切换（建分支、两边提交、
+`git log` 读历史、`git fsck` 直接跑通过）；分支切换（建分支、两边提交、
 切换还原、脏切换被挡、未追踪文件被挡/放行、
-`git branch` / `git log --all` 读分支与历史）。
+`git branch` / `git log --all` 读分支与历史）；diff 与索引
+（Myers 与暴力 LCS 对照 10,000 组随机输入；`minigit diff` /
+`diff --cached` 与 `git diff` 归一化后逐行一致，含随机文件树；
+索引 v2 round-trip、JSON 旧索引迁移、0xFFF 超长名、扩展跳过、
+校验和/截断损坏；`git status` 在 minigit 仓库里直接跑正常）。
 
 对象格式精确到字节的说明见 [docs/01-object-format.md](docs/01-object-format.md)，
+索引 v2 格式见 [docs/02-index-format.md](docs/02-index-format.md)，
 完整规划见仓库外的 `tech-project-plans.md`（项目 2）。

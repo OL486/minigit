@@ -1,7 +1,8 @@
 #!/bin/sh
-# M1+M2 演示：init → hash-object -w → cat-file（M1），
-# 再 add → commit → log → status（M2），并断言 SHA-1 与真 git 一致、
-# git log 能读提交历史、git fsck 通过。
+# M1+M2+M3+M4 演示：init → hash-object -w → cat-file（M1），
+# 再 add → commit → log → status（M2），branch / checkout（M3），
+# 最后改文件 → minigit diff 与 git diff 对照 → add →
+# git status 直接跑 → git fsck 直接跑（M4）。
 # 用法：./scripts/demo.sh <minigit 二进制路径>
 set -eu
 
@@ -119,16 +120,13 @@ S=$("$BIN" status)
 case "$S" in *"Untracked files:"*"new.txt"*) ;; *) echo "FAIL：未追踪文件 status 不对：$S"; exit 1;; esac
 echo "status 未追踪 OK"
 
-# git fsck 通过。注意：fsck 会读 .git/index，而 M2 的索引是临时
-# JSON 格式，直接跑会被 git 判定为 "index file corrupt"，所以
-# 这里临时把索引挪走再跑（对象本身是合法的，M4 换 v2 后不需要）。
-mv .git/index /tmp/mg-demo-index-json
+# git fsck 直接通过。M4 索引换成 v2 格式后不再需要挪走索引
+#（M2 时索引是临时 JSON 格式，fsck 会报 "index file corrupt"）。
 if ! git fsck >/dev/null 2>&1; then
 	echo "FAIL：git fsck 不通过"
 	exit 1
 fi
-mv /tmp/mg-demo-index-json .git/index
-echo "git fsck OK（索引临时挪走后跑）"
+echo "git fsck OK（直接跑，索引不挪走）"
 
 echo "=== M3：branch / checkout ==="
 
@@ -209,15 +207,12 @@ if [ "$O" != "feature only" ]; then
 fi
 echo "checkout 到 feature、only.txt 回来 OK"
 
-# 真 git 切 minigit 建的分支：在仓库副本里做——真 git checkout 要读
-# .git/index，而我们的索引是临时 JSON 格式，git 读不懂。所以先把
-# 副本的索引删掉，用 git read-tree 重建一份 v2 索引，再 checkout。
+# 真 git 切 minigit 建的分支：在仓库副本里做——M4 索引已是 v2 格式，
+# git 直接能读，不再需要删索引 + git read-tree 重建。
 COPY=$(mktemp -d)
 trap 'rm -rf "$WORK" ${COPY:-}' EXIT
 cp -a . "$COPY/repo"
 cd "$COPY/repo"
-rm .git/index
-git read-tree --reset -u HEAD >/dev/null 2>&1
 git checkout main >/dev/null 2>&1
 A=$(cat a.txt)
 if [ "$A" != "v2" ]; then
@@ -230,6 +225,49 @@ if [ "$A" != "v-feature" ]; then
 	echo "FAIL：真 git 切到 feature 后 a.txt 应为 v-feature，实际 $A"
 	exit 1
 fi
-echo "真 git checkout 切 minigit 的分支 OK"
+echo "真 git checkout 切 minigit 的分支 OK（直接读 v2 索引）"
+
+echo "=== M4：diff 与索引对齐 ==="
+
+# 回到原仓库（当前在 feature 分支，a.txt 是 v-feature）。
+cd "$WORK/demo"
+
+# 改文件：minigit diff 与 git diff 归一化后逐行一致
+#（归一化掉 index 行里的 SHA 前缀；minigit 固定取 7 位，
+# git 的缩写长度可能不同，SHA 本身由 hash-object 测试保证）。
+printf 'v-feature-2\nsecond line\n' > a.txt
+"$BIN" diff > /tmp/mg-demo-mini-diff.txt
+git diff | sed -E 's/index [0-9a-f]+\.\.[0-9a-f]+/index X..X/' > /tmp/mg-demo-git-diff.txt
+sed -E 's/index [0-9a-f]+\.\.[0-9a-f]+/index X..X/' /tmp/mg-demo-mini-diff.txt > /tmp/mg-demo-mini-diff-norm.txt
+if ! cmp -s /tmp/mg-demo-mini-diff-norm.txt /tmp/mg-demo-git-diff.txt; then
+	echo "FAIL：minigit diff 与 git diff 不一致"
+	diff /tmp/mg-demo-mini-diff-norm.txt /tmp/mg-demo-git-diff.txt || true
+	exit 1
+fi
+echo "minigit diff 与 git diff 一致 OK"
+
+# 暂存后：minigit diff --cached 与 git diff --cached 对照。
+"$BIN" add a.txt
+"$BIN" diff --cached > /tmp/mg-demo-mini-diff-c.txt
+git diff --cached | sed -E 's/index [0-9a-f]+\.\.[0-9a-f]+/index X..X/' > /tmp/mg-demo-git-diff-c.txt
+sed -E 's/index [0-9a-f]+\.\.[0-9a-f]+/index X..X/' /tmp/mg-demo-mini-diff-c.txt > /tmp/mg-demo-mini-diff-c-norm.txt
+if ! cmp -s /tmp/mg-demo-mini-diff-c-norm.txt /tmp/mg-demo-git-diff-c.txt; then
+	echo "FAIL：minigit diff --cached 与 git diff --cached 不一致"
+	diff /tmp/mg-demo-mini-diff-c-norm.txt /tmp/mg-demo-git-diff-c.txt || true
+	exit 1
+fi
+echo "minigit diff --cached 与 git diff --cached 一致 OK"
+
+# 真 git 的 git status 在 minigit 仓库里直接跑正常。
+GS=$(git status)
+case "$GS" in *"modified:   a.txt"*) ;; *) echo "FAIL：git status 看不到已暂存的 a.txt：$GS"; exit 1;; esac
+echo "git status 直接跑 OK（能看到已暂存修改）"
+
+# git fsck 直接跑通过（M2 的已知限制本轮消除）。
+if ! git fsck >/dev/null 2>&1; then
+	echo "FAIL：git fsck 不通过"
+	exit 1
+fi
+echo "git fsck 直接跑 OK"
 
 echo "demo 全部通过"

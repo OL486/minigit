@@ -335,18 +335,9 @@ func TestGitReadsHistoryAndFsck(t *testing.T) {
 	if tree != "a.txt\nb.txt" {
 		t.Fatalf("git ls-tree -r 不对：%q", tree)
 	}
-	// git fsck 通过。注意：fsck 会读 .git/index，而 M2 的索引是临时
-	// JSON 格式（不是 git 的 v2 格式），直接跑会被 git 判定为
-	// "index file corrupt"（连 GIT_INDEX_FILE 也绕不过去，fsck
-	// 读的就是默认位置的索引）。所以这里临时把索引文件挪走
-	// （defer 恢复），fsck 检查的是对象完整性，与索引无关。
-	// M4 把索引换成 v2 格式后就不需要这一步。
-	indexPath := filepath.Join(gitDir, "index")
-	movedPath := indexPath + ".m2tmp"
-	if err := os.Rename(indexPath, movedPath); err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = os.Rename(movedPath, indexPath) }()
+	// git fsck 直接跑通过。M2 时索引还是临时 JSON 格式，fsck 会
+	// 报 "index file corrupt"，只能先把索引挪走再跑；M4 索引换
+	// 成 v2 格式后不再需要这一步。
 	cmd := exec.Command(git, "fsck")
 	cmd.Dir = work
 	var out, errBuf bytes.Buffer

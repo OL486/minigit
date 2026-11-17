@@ -44,6 +44,8 @@ func main() {
 		err = cmdBranch(os.Args[2:])
 	case "checkout":
 		err = cmdCheckout(os.Args[2:])
+	case "diff":
+		err = cmdDiff(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -73,10 +75,13 @@ func usage() {
   minigit branch                   列出分支（当前分支前标 *）
   minigit branch <name> [start]    在 HEAD（或 start-point）创建分支
   minigit checkout <branch>        切换分支
+  minigit diff [--cached]          显示 unified diff（默认工作区相对索引；
+                                   --cached 显示索引相对 HEAD）
 
-M3 支持以上命令；diff / merge 是 M4 以后的事。
+M4 支持以上命令；merge 是 M5 的事。
 checkout 只接受分支名，不支持 detached HEAD；branch -d（删分支）本轮不做。
 branch 的名字里不能含 /（不支持层级分支名）。
+diff <commit> 不做（只比较工作区 / 索引 / HEAD 三方）。
 `)
 }
 
@@ -322,6 +327,23 @@ func cmdLog(args []string) error {
 		return err
 	}
 	return porcelain.Log(gitDir, oneline, os.Stdout)
+}
+
+func cmdDiff(args []string) error {
+	cached := false
+	for _, a := range args {
+		switch a {
+		case "--cached":
+			cached = true
+		default:
+			return fmt.Errorf("diff 不支持的参数：%s（用法：diff [--cached]）", a)
+		}
+	}
+	gitDir, workDir, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	return porcelain.Diff(gitDir, workDir, cached, os.Stdout)
 }
 
 func cmdBranch(args []string) error {

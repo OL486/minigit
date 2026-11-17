@@ -97,13 +97,6 @@ func stageFile(gitDir, workDir string, idx *index.Index, abs string) error {
 	if st.Mode().Perm()&0o111 != 0 {
 		mode = "100755"
 	}
-	idx.Upsert(index.Entry{
-		Path:      rel,
-		SHA:       sha,
-		Mode:      mode,
-		Size:      st.Size(),
-		MtimeSec:  st.ModTime().Unix(),
-		MtimeNsec: int64(st.ModTime().Nanosecond()),
-	})
+	idx.Upsert(index.EntryFromStat(rel, sha, mode, st))
 	return nil
 }
