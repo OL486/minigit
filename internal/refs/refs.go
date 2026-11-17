@@ -133,6 +133,39 @@ func UpdateRef(gitDir, name, sha string) error {
 	return nil
 }
 
+// SetHead 把 HEAD 指向给定的引用（完整名，如 "refs/heads/feature"）。
+// 写盘用临时文件 + 改名 + fsync，和 UpdateRef 同样的策略。
+func SetHead(gitDir, ref string) error {
+	if !strings.HasPrefix(ref, "refs/") {
+		return fmt.Errorf("HEAD 只能指向引用， got %q", ref)
+	}
+	path := filepath.Join(gitDir, "HEAD")
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("写入 HEAD 失败：%w", err)
+	}
+	if _, err := f.WriteString("ref: " + ref + "\n"); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("写入 HEAD 失败：%w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return fmt.Errorf("同步 HEAD 失败：%w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("写入 HEAD 失败：%w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("写入 HEAD 失败：%w", err)
+	}
+	return nil
+}
+
 // ListBranches 列出所有本地分支名（按字母序）。
 func ListBranches(gitDir string) ([]string, error) {
 	dir := filepath.Join(gitDir, "refs", "heads")

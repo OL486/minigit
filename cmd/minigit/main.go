@@ -40,6 +40,10 @@ func main() {
 		err = cmdStatus(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
+	case "branch":
+		err = cmdBranch(os.Args[2:])
+	case "checkout":
+		err = cmdCheckout(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -66,8 +70,13 @@ func usage() {
   minigit commit -m <message>      按暂存区提交
   minigit status                   显示工作区状态
   minigit log [--oneline]          显示提交历史
+  minigit branch                   列出分支（当前分支前标 *）
+  minigit branch <name> [start]    在 HEAD（或 start-point）创建分支
+  minigit checkout <branch>        切换分支
 
-M2 支持以上命令；branch / checkout / diff / merge 是 M3 以后的事。
+M3 支持以上命令；diff / merge 是 M4 以后的事。
+checkout 只接受分支名，不支持 detached HEAD；branch -d（删分支）本轮不做。
+branch 的名字里不能含 /（不支持层级分支名）。
 `)
 }
 
@@ -313,6 +322,43 @@ func cmdLog(args []string) error {
 		return err
 	}
 	return porcelain.Log(gitDir, oneline, os.Stdout)
+}
+
+func cmdBranch(args []string) error {
+	gitDir, _, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	switch len(args) {
+	case 0:
+		return porcelain.ListBranches(gitDir, os.Stdout)
+	case 1:
+		return porcelain.CreateBranch(gitDir, args[0], "")
+	case 2:
+		return porcelain.CreateBranch(gitDir, args[0], args[1])
+	default:
+		return fmt.Errorf("branch 用法：branch [name] [start-point]")
+	}
+}
+
+func cmdCheckout(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("checkout 需要恰好一个分支名参数")
+	}
+	gitDir, workDir, err := repo.FindRepo(".")
+	if err != nil {
+		return err
+	}
+	switched, err := porcelain.Checkout(gitDir, workDir, args[0])
+	if err != nil {
+		return err
+	}
+	if switched {
+		fmt.Printf("Switched to branch '%s'\n", args[0])
+	} else {
+		fmt.Printf("Already on '%s'\n", args[0])
+	}
+	return nil
 }
 
 // firstLine 取提交信息的首行（commit 摘要打印用）。

@@ -130,4 +130,106 @@ fi
 mv /tmp/mg-demo-index-json .git/index
 echo "git fsck OK（索引临时挪走后跑）"
 
+echo "=== M3：branch / checkout ==="
+
+# M2 演示留下的未追踪文件（只用来测 status），先删掉，
+# 让 M3 从干净的仓库开始。
+rm -f new.txt
+
+# 建分支：从当前 HEAD（second commit）分出 feature。
+"$BIN" branch feature
+B=$("$BIN" branch)
+if [ "$B" != "  feature
+* main" ]; then
+	echo "FAIL：branch 列表不对：$B"
+	exit 1
+fi
+echo "branch 建分支 + 列表 OK"
+
+# 在 feature 上改文件提交。
+"$BIN" checkout feature >/dev/null
+printf 'v-feature\n' > a.txt
+"$BIN" add a.txt
+"$BIN" commit -m "feature commit" >/dev/null
+echo "feature 上提交 OK"
+
+# 切回 main：a.txt 还原成 main 的版本（v2）。
+"$BIN" checkout main >/dev/null
+A=$(cat a.txt)
+if [ "$A" != "v2" ]; then
+	echo "FAIL：切回 main 后 a.txt 应为 v2，实际 $A"
+	exit 1
+fi
+S=$("$BIN" status)
+case "$S" in *"nothing to commit, working tree clean"*) ;; *) echo "FAIL：切回后 status 应干净：$S"; exit 1;; esac
+echo "checkout 切回 main、内容还原、status 干净 OK"
+
+# git branch / git log --all 读 minigit 的分支与历史。
+GB=$(git branch)
+if [ "$GB" != "  feature
+* main" ]; then
+	echo "FAIL：git branch 不对：$GB"
+	exit 1
+fi
+GA=$(git log --all --oneline | wc -l)
+if [ "$GA" != "3" ]; then
+	echo "FAIL：git log --all 应有 3 条，实际 $GA"
+	exit 1
+fi
+echo "git branch / git log --all OK"
+
+# 脏切换被挡住：改 a.txt 不提交，目标分支里 a.txt 不同。
+printf 'v-dirty\n' > a.txt
+if "$BIN" checkout feature 2>/dev/null; then
+	echo "FAIL：脏切换应被挡住"
+	exit 1
+fi
+echo "脏切换被挡住 OK"
+# 恢复干净：把 a.txt 改回去。
+printf 'v2\n' > a.txt
+
+# 未追踪文件被挡住：在 feature 上才有的文件，main 上有个同名不同内容。
+"$BIN" checkout feature >/dev/null
+printf 'feature only\n' > only.txt
+"$BIN" add only.txt
+"$BIN" commit -m "add only" >/dev/null
+"$BIN" checkout main >/dev/null
+printf 'other content\n' > only.txt
+if "$BIN" checkout feature 2>/dev/null; then
+	echo "FAIL：未追踪文件会被覆盖时应挡住"
+	exit 1
+fi
+echo "未追踪文件被挡住 OK"
+rm -f only.txt
+"$BIN" checkout feature >/dev/null
+O=$(cat only.txt)
+if [ "$O" != "feature only" ]; then
+	echo "FAIL：切到 feature 后 only.txt 不对：$O"
+	exit 1
+fi
+echo "checkout 到 feature、only.txt 回来 OK"
+
+# 真 git 切 minigit 建的分支：在仓库副本里做——真 git checkout 要读
+# .git/index，而我们的索引是临时 JSON 格式，git 读不懂。所以先把
+# 副本的索引删掉，用 git read-tree 重建一份 v2 索引，再 checkout。
+COPY=$(mktemp -d)
+trap 'rm -rf "$WORK" ${COPY:-}' EXIT
+cp -a . "$COPY/repo"
+cd "$COPY/repo"
+rm .git/index
+git read-tree --reset -u HEAD >/dev/null 2>&1
+git checkout main >/dev/null 2>&1
+A=$(cat a.txt)
+if [ "$A" != "v2" ]; then
+	echo "FAIL：真 git 切到 main 后 a.txt 应为 v2，实际 $A"
+	exit 1
+fi
+git checkout feature >/dev/null 2>&1
+A=$(cat a.txt)
+if [ "$A" != "v-feature" ]; then
+	echo "FAIL：真 git 切到 feature 后 a.txt 应为 v-feature，实际 $A"
+	exit 1
+fi
+echo "真 git checkout 切 minigit 的分支 OK"
+
 echo "demo 全部通过"
